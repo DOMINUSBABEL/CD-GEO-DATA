@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, Component, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Map, BarChart3, Layers, Info, MapPin, Users, Vote, Filter, X, Menu, Upload, AlertCircle, Building2, CheckCircle2 } from 'lucide-react';
+import { Map, BarChart3, Layers, Info, MapPin, Users, Vote, Filter, X, Menu, Upload, AlertCircle, Building2, CheckCircle2, Loader2, RefreshCw } from 'lucide-react';
 
 // --- Types & Interfaces ---
 
@@ -24,6 +24,60 @@ interface PollingStation {
   votes: Record<string, number>; // candidateName -> votes
   totalVotes: number;
   winnerName: string;
+}
+
+// --- ERROR BOUNDARY (Structural Safety) ---
+
+interface ErrorBoundaryProps {
+  children: ReactNode;
+}
+
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  constructor(props: ErrorBoundaryProps) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("Structural Error Caught:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 p-6">
+          <div className="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full text-center border border-red-100">
+            <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mx-auto mb-4">
+              <AlertCircle className="w-8 h-8 text-red-500" />
+            </div>
+            <h2 className="text-xl font-bold text-slate-800 mb-2">Error del Sistema</h2>
+            <p className="text-slate-500 text-sm mb-6">
+              Se ha producido un error inesperado en la visualización. Esto puede deberse a datos corruptos o un fallo de renderizado.
+            </p>
+            <div className="bg-slate-100 p-3 rounded-lg text-xs font-mono text-left text-slate-600 mb-6 overflow-auto max-h-32">
+              {this.state.error?.message}
+            </div>
+            <button 
+              onClick={() => window.location.reload()}
+              className="w-full py-3 bg-red-600 text-white rounded-xl font-semibold hover:bg-red-700 transition-colors flex items-center justify-center"
+            >
+              <RefreshCw className="w-4 h-4 mr-2" /> Reiniciar Aplicativo
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }
 
 // --- CONSTANTS & GEO DATA ---
@@ -145,7 +199,6 @@ const parseCSV = (csvText: string): { stations: PollingStation[], candidates: Ca
     const votos = parseInt(row[idx.votos]) || 0;
     
     // Key to group stations (Name + Comuna + Corporation)
-    // We group by corporation too because sometimes stations are listed differently for Senate vs Chamber
     const stationKey = `${puestoName}-${comunaName}-${corpName}`.toLowerCase().replace(/\s+/g, '-');
 
     comunasSet.add(comunaName);
@@ -261,8 +314,8 @@ const FileUploadModal = ({ onUpload, onClose }: { onUpload: (data: string) => vo
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
-      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 relative animate-in fade-in zoom-in duration-200">
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 relative animate-in zoom-in-95 duration-200">
         <button onClick={onClose} className="absolute top-4 right-4 text-slate-400 hover:text-slate-600">
           <X className="w-5 h-5" />
         </button>
@@ -384,27 +437,39 @@ const MapComponent = ({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const markersRef = useRef<any[]>([]);
 
+  // 1. Initialize Map (Run once on mount)
   useEffect(() => {
     if (!mapContainerRef.current) return;
+    
+    // Safety check to avoid double initialization
+    if (mapRef.current) return;
 
-    if (!mapRef.current) {
-      // Initialize Map - Center on Medellín
-      const map = (window as any).L.map(mapContainerRef.current, {
-        zoomControl: false
-      }).setView([6.2476, -75.5658], 13);
-      
-      // Controls
-      (window as any).L.control.zoom({ position: 'bottomright' }).addTo(map);
+    const map = (window as any).L.map(mapContainerRef.current, {
+      zoomControl: false
+    }).setView([6.2476, -75.5658], 13);
+    
+    (window as any).L.control.zoom({ position: 'bottomright' }).addTo(map);
 
-      // Light tile layer
-      (window as any).L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap &copy; CARTO',
-        subdomains: 'abcd',
-        maxZoom: 19
-      }).addTo(map);
+    (window as any).L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '&copy; OpenStreetMap &copy; CARTO',
+      subdomains: 'abcd',
+      maxZoom: 19
+    }).addTo(map);
 
-      mapRef.current = map;
-    }
+    mapRef.current = map;
+
+    return () => {
+      // Cleanup on unmount
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+    };
+  }, []);
+
+  // 2. Update Markers (Run when data/viewLayer changes)
+  useEffect(() => {
+    if (!mapRef.current) return;
 
     // Clear existing markers
     markersRef.current.forEach(m => m.remove());
@@ -412,13 +477,11 @@ const MapComponent = ({
 
     // Add Markers
     stations.forEach(station => {
-      // Find winner object
       const winnerName = station.winnerName;
       const winner = candidates.find(c => c.name === winnerName);
       
       const color = viewLayer === 'winner' ? (winner?.color || '#94a3b8') : '#3b82f6';
       
-      // Calculate radius
       const radius = viewLayer === 'winner' 
         ? Math.max(5, Math.min(15, Math.sqrt(station.totalVotes) / 3)) 
         : 6;
@@ -426,7 +489,7 @@ const MapComponent = ({
       const markerOptions = {
         radius: radius,
         fillColor: color,
-        color: station.isApproximate ? '#f59e0b' : '#fff', // Orange border if approximate
+        color: station.isApproximate ? '#f59e0b' : '#fff', 
         weight: station.isApproximate ? 2 : 1,
         dashArray: station.isApproximate ? '2, 2' : null,
         opacity: 1,
@@ -435,7 +498,6 @@ const MapComponent = ({
 
       const marker = (window as any).L.circleMarker([station.lat, station.lng], markerOptions).addTo(mapRef.current);
 
-      // Styled Popup
       marker.bindPopup(`
         <div class="p-3 font-sans">
           <div class="font-bold text-slate-800 text-sm mb-0.5 leading-tight">${station.name}</div>
@@ -465,8 +527,9 @@ const MapComponent = ({
       markersRef.current.push(marker);
     });
     
-    // Fit bounds if we have stations
-    if (stations.length > 0 && mapRef.current) {
+    // Fit bounds only if it's the first time or specific actions, 
+    // but here we just do it if we have stations to be user friendly
+    if (stations.length > 0) {
         const bounds = (window as any).L.latLngBounds(stations.map(s => [s.lat, s.lng]));
         mapRef.current.fitBounds(bounds, { padding: [50, 50] });
     }
@@ -508,7 +571,7 @@ const DashboardApp = () => {
       if (station) {
         setSelectedStation(station);
         setIsSidebarOpen(true);
-        setActiveTab('map'); // Ensure we stay on map
+        setActiveTab('map'); 
       }
     };
     window.addEventListener('station-select', handleStationSelect);
@@ -529,11 +592,11 @@ const DashboardApp = () => {
     }
   };
 
-  // Safe checks
-  if (!data) return <div className="flex h-screen items-center justify-center text-slate-500 animate-pulse">Iniciando sistema electoral...</div>;
-
-  // Filter Data
+  // --- REORDERED HOOKS AND LOGIC START ---
+  
+  // Always run hooks. Handle null data gracefully inside.
   const filteredStations = useMemo(() => {
+    if (!data) return [];
     return data.stations.filter(s => {
         const matchesComuna = selectedComuna ? s.comunaName === selectedComuna : true;
         const matchesCorp = selectedCorporation ? s.corporation === selectedCorporation : true;
@@ -541,15 +604,20 @@ const DashboardApp = () => {
     });
   }, [data, selectedComuna, selectedCorporation]);
 
-  // Aggregate Data
   const aggregatedStats = useMemo(() => {
+    if (!data) return {
+      totalVotes: 0,
+      potentialVoters: 0,
+      votesByCandidate: {} as Record<string, number>
+    };
+
     const stats = {
       totalVotes: 0,
       potentialVoters: 0,
       votesByCandidate: {} as Record<string, number>
     };
     
-    // Initialize with known candidates to ensure 0s are shown if candidates exist in metadata
+    // Initialize candidates
     data.candidates.forEach(c => stats.votesByCandidate[c.name] = 0);
 
     filteredStations.forEach(s => {
@@ -567,7 +635,7 @@ const DashboardApp = () => {
     return stats;
   }, [filteredStations, data]);
 
-  // Find winner
+  // Derived values - computed safely
   let winningCandidateName = 'N/A';
   let maxVotes = -1;
   Object.entries(aggregatedStats.votesByCandidate).forEach(([name, count]) => {
@@ -577,10 +645,21 @@ const DashboardApp = () => {
       }
   });
   
-  const winningCandidate = data.candidates.find(c => c.name === winningCandidateName);
+  const winningCandidate = data?.candidates.find(c => c.name === winningCandidateName);
   const participationRate = aggregatedStats.potentialVoters > 0 
     ? ((aggregatedStats.totalVotes / aggregatedStats.potentialVoters) * 100).toFixed(1)
     : '0';
+
+  // --- REORDERED HOOKS AND LOGIC END ---
+
+  // Now we can return the loading state safely after all hooks have run
+  if (!data) return (
+    <div className="flex flex-col h-screen items-center justify-center bg-slate-50 text-slate-500">
+        <Loader2 className="w-10 h-10 animate-spin text-blue-600 mb-4" />
+        <h2 className="text-xl font-semibold text-slate-800">Iniciando Sistema Electoral</h2>
+        <p className="text-sm text-slate-400 mt-2">Cargando visualizaciones de Medellín...</p>
+    </div>
+  );
 
   return (
     <div className="flex flex-col h-screen bg-slate-50 overflow-hidden font-sans">
@@ -598,7 +677,6 @@ const DashboardApp = () => {
         </div>
         
         <div className="flex items-center space-x-3">
-            {/* Branding - Header */}
             <div className="hidden lg:block text-right mr-4 border-r border-slate-100 pr-4">
                 <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Powered By</p>
                 <p className="text-xs font-bold text-blue-900">Consultora Talleyrand</p>
@@ -753,7 +831,7 @@ const DashboardApp = () => {
                   {data.candidates
                      .filter(c => aggregatedStats.votesByCandidate[c.name] > 0)
                      .sort((a,b) => aggregatedStats.votesByCandidate[b.name] - aggregatedStats.votesByCandidate[a.name])
-                     .slice(0, 8) // Top 8 for sidebar
+                     .slice(0, 8) 
                      .map(cand => (
                     <CandidateBar 
                       key={cand.id} 
@@ -767,14 +845,12 @@ const DashboardApp = () => {
             )}
           </div>
 
-          {/* Sidebar Footer Branding */}
           <div className="p-4 border-t border-slate-100 bg-slate-50 text-center">
              <p className="text-[10px] text-slate-400 font-medium">Desarrollado por</p>
              <p className="text-sm font-bold text-slate-700 tracking-tight">Consultora Talleyrand</p>
           </div>
         </aside>
 
-        {/* Mobile Sidebar Toggle */}
         {!isSidebarOpen && activeTab === 'map' && (
            <button 
              onClick={() => setIsSidebarOpen(true)}
@@ -796,7 +872,6 @@ const DashboardApp = () => {
                viewLayer={viewLayer}
              />
           ) : (
-             /* Dashboard View */
              <div className="p-6 max-w-7xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
                   <div>
@@ -804,7 +879,6 @@ const DashboardApp = () => {
                     <p className="text-slate-500 mt-1">Análisis detallado de votaciones Cámara y Senado</p>
                   </div>
                   
-                  {/* Dashboard Filters */}
                   <div className="flex space-x-2 bg-white p-1.5 rounded-lg shadow-sm border border-slate-200">
                      <select 
                         className="bg-transparent text-sm px-2 font-medium text-slate-700 outline-none"
@@ -826,7 +900,6 @@ const DashboardApp = () => {
                   </div>
                 </div>
 
-                {/* KPI Cards */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                    <StatCard 
                       title="Votos Contabilizados" 
@@ -851,10 +924,8 @@ const DashboardApp = () => {
                    />
                 </div>
 
-                {/* Charts Grid */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                    
-                   {/* Main Bar Chart */}
                    <div className="lg:col-span-2 bg-white p-6 rounded-xl shadow-sm border border-slate-100">
                       <h3 className="font-bold text-lg text-slate-800 mb-6 flex items-center">
                         <BarChart3 className="w-5 h-5 mr-2 text-slate-400" />
@@ -875,7 +946,6 @@ const DashboardApp = () => {
                       </div>
                    </div>
 
-                   {/* Geo Breakdown */}
                    <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-100 flex flex-col h-[500px]">
                       <h3 className="font-bold text-lg text-slate-800 mb-4 flex items-center">
                         <Map className="w-5 h-5 mr-2 text-slate-400" />
@@ -891,7 +961,6 @@ const DashboardApp = () => {
                            </thead>
                            <tbody className="divide-y divide-slate-100">
                              {data.comunas.map(comunaName => {
-                               // Calculate stats for this specific comuna row
                                const cStations = data.stations.filter(s => {
                                    const matchComuna = s.comunaName === comunaName;
                                    const matchCorp = selectedCorporation ? s.corporation === selectedCorporation : true;
@@ -918,10 +987,8 @@ const DashboardApp = () => {
         </main>
       </div>
       
-      {/* Upload Modal */}
       {showUploadModal && <FileUploadModal onUpload={handleCsvUpload} onClose={() => setShowUploadModal(false)} />}
       
-      {/* Success Toast */}
       {showLoadSuccess && (
           <div className="fixed bottom-6 right-6 bg-emerald-600 text-white px-6 py-3 rounded-lg shadow-lg flex items-center animate-in slide-in-from-bottom-10 fade-in duration-300 z-50">
               <CheckCircle2 className="w-5 h-5 mr-3" />
@@ -938,4 +1005,8 @@ const DashboardApp = () => {
 };
 
 const root = createRoot(document.getElementById('root')!);
-root.render(<DashboardApp />);
+root.render(
+  <ErrorBoundary>
+    <DashboardApp />
+  </ErrorBoundary>
+);
